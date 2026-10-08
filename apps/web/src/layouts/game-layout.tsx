@@ -34,6 +34,7 @@ import {
   useLocation,
   useMatches,
   useNavigate,
+  useNavigationType,
 } from 'react-router';
 import { SpecialSceneProvider } from './special-scene';
 import { useSpecialSceneBackOverride } from './useSpecialSceneBack.js';
@@ -231,6 +232,52 @@ function SectVisitSceneChrome() {
   );
 }
 
+/**
+ * 通用返回条。
+ *
+ * 主壳原本只有「顶部 HUD + 底部 Dock」，子页面（背包 / 市场 / 宗门 / 日志……）
+ * 没有任何返回入口，进来容易迷路。这里补一个统一的返回：
+ * 优先回退浏览器历史，本会话没有可回退的历史就回主界面。
+ *
+ * 用 React Router 的公开 API `useNavigationType` 自己数栈深，不依赖内部实现。
+ */
+function GameBackBar() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const depthRef = useRef(0);
+
+  useEffect(() => {
+    if (navigationType === 'PUSH') {
+      depthRef.current += 1;
+    } else if (navigationType === 'POP') {
+      depthRef.current = Math.max(0, depthRef.current - 1);
+    }
+  }, [location.key, navigationType]);
+
+  const onBack = useCallback(() => {
+    if (depthRef.current > 0) {
+      navigate(-1);
+      return;
+    }
+
+    navigate('/game', { replace: true });
+  }, [navigate]);
+
+  return (
+    <div className="pointer-events-none flex px-[max(env(safe-area-inset-left),0.75rem)] pt-1.5 md:pl-[max(env(safe-area-inset-left),1.25rem)]">
+      <button
+        type="button"
+        onClick={onBack}
+        aria-label="返回上一页"
+        className="border-battle-rule-strong text-battle-muted hover:text-crimson pointer-events-auto border border-dashed bg-[rgba(248,243,230,0.94)] px-3 py-1.5 text-sm shadow-[0_10px_30px_rgba(44,24,16,0.08)] backdrop-blur-sm transition"
+      >
+        [← 返回]
+      </button>
+    </div>
+  );
+}
+
 export function GameViewportLayout() {
   const location = useLocation();
   const matches = useMatches();
@@ -282,6 +329,7 @@ export function GameViewportLayout() {
       <WorldChatFeedProvider>
         <div className="flex min-h-[100svh] flex-col">
           <GameTopHud snapshot={hud} />
+          {location.pathname === '/game' ? null : <GameBackBar />}
           <main
             className="min-h-0 flex-1"
             style={{
