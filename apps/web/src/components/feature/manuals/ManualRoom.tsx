@@ -202,6 +202,15 @@ export function ManualRoom() {
           {view.blockedReason}
         </p>
       ) : null}
+      {view ? (
+        <p className="text-ink-secondary mb-3 text-xs leading-6">
+          每个境界位同时只运转一种功法，同一位内可参悟 {MAX_MANUALS_PER_SLOT}
+          种、随时改修；境界提升会开放更多境界位（当前已开放 {unlocked} 位，最多 4
+          位）。
+          <br />
+          想换功法：点开目标功法，在详情页右上角点「改修此法」。
+        </p>
+      ) : null}
     </>
   );
   const detail =
