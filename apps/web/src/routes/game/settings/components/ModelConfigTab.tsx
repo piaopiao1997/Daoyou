@@ -17,7 +17,11 @@ import {
 const PROVIDER_LABELS: Record<LlmProviderId, string> = {
   deepseek: 'DeepSeek',
   alibaba: '阿里云百炼（Qwen）',
+  openai: '自定义（OpenAI 兼容）',
 };
+
+/** 自定义供应商必须填接口地址 */
+const needsBaseUrl = (provider: LlmProviderId) => provider === 'openai';
 
 export function ModelConfigTab() {
   const stored = readStoredLlmConfig();
@@ -28,6 +32,7 @@ export function ModelConfigTab() {
   const [model, setModel] = useState(
     stored?.model ?? LLM_PROVIDER_DEFAULT_MODELS.alibaba,
   );
+  const [baseUrl, setBaseUrl] = useState(stored?.baseUrl ?? '');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{
     type: 'success' | 'error';
@@ -35,7 +40,11 @@ export function ModelConfigTab() {
   } | null>(null);
   const [hasConfig, setHasConfig] = useState(!!stored);
 
-  const canSubmit = apiKey.trim() && model.trim() && !loading;
+  const canSubmit =
+    apiKey.trim() &&
+    model.trim() &&
+    (!needsBaseUrl(provider) || baseUrl.trim()) &&
+    !loading;
 
   const handleProviderChange = (value: string) => {
     const next = value as LlmProviderId;
@@ -46,9 +55,20 @@ export function ModelConfigTab() {
   const handleSubmit = async () => {
     if (!canSubmit) return;
 
-    const parsed = LlmByokConfigSchema.safeParse({ provider, apiKey, model });
+    const parsed = LlmByokConfigSchema.safeParse({
+      provider,
+      apiKey,
+      model,
+      ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+    });
     if (!parsed.success) {
-      setMessage({ type: 'error', text: '配置格式无效' });
+      const issue = parsed.error.issues[0];
+      setMessage({
+        type: 'error',
+        text: issue?.path[0] === 'baseUrl'
+          ? '接口地址格式无效，请填写完整的 https://.../v1 地址'
+          : '配置格式无效',
+      });
       return;
     }
 
@@ -71,6 +91,7 @@ export function ModelConfigTab() {
     setProvider('alibaba');
     setApiKey('');
     setModel(LLM_PROVIDER_DEFAULT_MODELS.alibaba);
+    setBaseUrl('');
     setHasConfig(false);
     setMessage({
       type: 'success',
@@ -88,7 +109,19 @@ export function ModelConfigTab() {
       >
         <option value="deepseek">{PROVIDER_LABELS.deepseek}</option>
         <option value="alibaba">{PROVIDER_LABELS.alibaba}</option>
+        <option value="openai">{PROVIDER_LABELS.openai}</option>
       </InkSelect>
+
+      {needsBaseUrl(provider) ? (
+        <InkInput
+          label="接口地址"
+          placeholder="https://api.example.com/v1"
+          value={baseUrl}
+          onChange={setBaseUrl}
+          size="sm"
+          labelClassName={settingsLabelClass}
+        />
+      ) : null}
 
       <InkInput
         label="API Key"
@@ -137,11 +170,16 @@ export function ModelConfigTab() {
 
       <SettingsSection>
         <p className="text-ink-secondary text-sm leading-6">
-          支持 DeepSeek 与阿里云百炼（Qwen）。配置保存在浏览器 localStorage
-          中，仅当前设备生效，更换浏览器或清除缓存后需要重新配置。
+          支持 DeepSeek、阿里云百炼（Qwen），以及任意
+          <strong> OpenAI 兼容 </strong>
+          接口（自定义）。配置保存在浏览器 localStorage 中，仅当前设备生效，
+          更换浏览器或清除缓存后需要重新配置。
           <br />
           API Key
           仅在前端本地存储，服务端通过请求头获取并调用，不会在服务器持久化保存。
+          <br />
+          自定义接口请填写到 <code>/v1</code> 为止的地址（例如
+          <code> https://your-gateway.com/v1</code>）。
         </p>
       </SettingsSection>
     </div>

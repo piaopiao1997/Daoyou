@@ -17,6 +17,7 @@
   "dependencies": {
     "@ai-sdk/alibaba": "^2.0.45",
     "@ai-sdk/deepseek": "^3.0.44",
+    "@ai-sdk/openai-compatible": "3.0.48",
     "@better-auth/core": "^1.7.4",
     "@better-auth/drizzle-adapter": "^1.7.4",
     "@better-auth/i18n": "^1.7.4",

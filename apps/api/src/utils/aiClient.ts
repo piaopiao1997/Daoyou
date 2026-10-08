@@ -275,6 +275,7 @@ function listConfiguredServerRoutes(): LlmRoute[] {
     availableProviders: {
       alibaba: Boolean(getRuntimeEnvironment().ALIBABA_API_KEY?.trim()),
       deepseek: Boolean(getRuntimeEnvironment().DEEPSEEK_API_KEY?.trim()),
+      openai: Boolean(getRuntimeEnvironment().OPENAI_API_KEY?.trim()),
     },
   });
 }
@@ -288,7 +289,10 @@ const AI_FALLBACK_ROUTE_LIMIT = 8;
  */
 const AI_SDK_MAX_RETRIES = 0;
 
-type LlmRouteTarget = Pick<LlmRoute, 'provider' | 'model'>;
+type LlmRouteTarget = Pick<LlmRoute, 'provider' | 'model'> & {
+  /** 仅「自定义（OpenAI 兼容）」供应商使用 */
+  baseUrl?: string;
+};
 
 /**
  * 服务端路由目标，**严格按 LLM_PROVIDER 的书写顺序**返回。
@@ -305,7 +309,13 @@ function resolveRouteTargets(): LlmRouteTarget[] {
   const requestConfig = getRequestConfig();
 
   if (requestConfig) {
-    return [{ provider: requestConfig.provider, model: requestConfig.model }];
+    return [
+      {
+        provider: requestConfig.provider,
+        model: requestConfig.model,
+        ...(requestConfig.baseUrl ? { baseUrl: requestConfig.baseUrl } : {}),
+      },
+    ];
   }
 
   return resolveServerRouteTargets();
@@ -335,7 +345,9 @@ function resolveModelForRoute(
     apiKeyOverride ?? getRuntimeEnvironment()[def.apiKeyEnv]?.trim();
 
   return {
-    model: def.create({ apiKey, fetch: debugFetch })(modelName),
+    model: def.create({ apiKey, baseURL: route.baseUrl, fetch: debugFetch })(
+      modelName,
+    ),
     provider: providerId,
     modelName,
   };
@@ -344,9 +356,7 @@ function resolveModelForRoute(
 /** 流式场景没法回退（已经有部分输出），只用第一顺位 */
 function resolvePrimaryModel(sceneId: LlmSceneId): ResolvedModel {
   const requestConfig = getRequestConfig();
-  const target = requestConfig
-    ? { provider: requestConfig.provider, model: requestConfig.model }
-    : resolveServerRouteTargets()[0];
+  const target = resolveRouteTargets()[0];
 
   if (!target) {
     throw new Error('No LLM route configured.');

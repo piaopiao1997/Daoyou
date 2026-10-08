@@ -22,6 +22,7 @@ export function readStoredLlmConfig(
       provider,
       apiKey: parsed.apiKey,
       model: parsed.model,
+      baseUrl: typeof parsed.baseUrl === 'string' ? parsed.baseUrl : undefined,
     });
     return config.success ? config.data : null;
   } catch {

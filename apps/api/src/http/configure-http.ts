@@ -78,8 +78,19 @@ export function configureHttp(app: NestExpressApplication): void {
     const provider = request.get('x-llm-provider');
     const apiKey = request.get('x-llm-api-key');
     const model = request.get('x-llm-model');
-    if (provider !== undefined || apiKey !== undefined || model !== undefined) {
-      const result = LlmByokConfigSchema.safeParse({ provider, apiKey, model });
+    const baseUrl = request.get('x-llm-base-url');
+    if (
+      provider !== undefined ||
+      apiKey !== undefined ||
+      model !== undefined ||
+      baseUrl !== undefined
+    ) {
+      const result = LlmByokConfigSchema.safeParse({
+        provider,
+        apiKey,
+        model,
+        baseUrl,
+      });
       if (!result.success) {
         response
           .status(400)

@@ -31,6 +31,9 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
     headers.set('x-llm-provider', config.provider);
     headers.set('x-llm-api-key', config.apiKey);
     headers.set('x-llm-model', config.model);
+    if (config.baseUrl) {
+      headers.set('x-llm-base-url', config.baseUrl);
+    }
   }
   const credentials =
     init?.credentials ??
