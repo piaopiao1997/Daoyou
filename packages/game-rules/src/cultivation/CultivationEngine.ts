@@ -139,7 +139,7 @@ export function performCultivation(
   // 计算修为获取
   const expResult = calculateCultivationExp(cultivator, years, rng);
 
-  const finalExpGain = Math.max(
+  let finalExpGain = Math.max(
     0,
     Math.floor(
       expResult.exp_gained *
@@ -148,9 +148,28 @@ export function performCultivation(
         getCultivationBoostRetreatMultiplier(cultivator.condition),
     ),
   );
+
+  // C（2026-10-08 浩瑜定）：撞顶只扣所需年限。
+  // 若按请求年限算出的收益已超出「填满当前阶段」所需，就把实际闭关年限按比例缩到刚好够用，
+  // 收益与感悟同步按比例缩 —— 多闭的年份既不白扣寿元，也不白给修为。
+  const expNeeded = Math.max(0, (progress.exp_cap ?? 0) - exp_before);
+  let yearsSpent = years;
+  if (expNeeded > 0 && finalExpGain > expNeeded) {
+    const ratio = expNeeded / finalExpGain;
+    yearsSpent = Math.max(1, Math.min(years, Math.ceil(years * ratio)));
+  }
+  const yearsRatio = yearsSpent / years;
+  if (yearsRatio < 1) {
+    finalExpGain = Math.max(1, Math.floor(finalExpGain * yearsRatio));
+  }
+
   const finalInsightGain = Math.max(
     0,
-    Math.floor(expResult.insight_gained * fateContext.retreatInsightMultiplier),
+    Math.floor(
+      expResult.insight_gained *
+        fateContext.retreatInsightMultiplier *
+        yearsRatio,
+    ),
   );
 
   // 修为允许超过当前阶段 cap；突破成功时扣除本阶段 cap 并保留溢出。
@@ -172,16 +191,16 @@ export function performCultivation(
   const bottleneckActive = syncBottleneckState(progress);
   const bottleneck_entered = !wasBottleneckActive && bottleneckActive;
 
-  // 更新年龄
-  cultivator.age += years;
+  // 更新年龄（按实际消耗年限，撞顶时已被缩减）
+  cultivator.age += yearsSpent;
   cultivator.closed_door_years_total =
-    (cultivator.closed_door_years_total || 0) + years;
+    (cultivator.closed_door_years_total || 0) + yearsSpent;
 
   // 创建闭关记录
   const record: RetreatRecord = {
     realm: cultivator.realm,
     realm_stage: cultivator.realm_stage,
-    years,
+    years: yearsSpent,
     success: false, // 修炼不算突破
     chance: 0,
     roll: 0,
@@ -209,6 +228,8 @@ export function performCultivation(
       bottleneck_entered,
       can_breakthrough: canAttemptBreakthrough(progress),
       progress: calculateExpProgress(progress),
+      years_requested: years,
+      years_spent: yearsSpent,
     },
     record,
   };

@@ -36,6 +36,10 @@ export interface CultivationResult {
     bottleneck_entered: boolean;
     can_breakthrough: boolean;
     progress: number; // 百分比
+    /** 玩家请求的闭关年限 */
+    years_requested: number;
+    /** 实际消耗的年限（撞顶时按「填满当前阶段」所需缩减） */
+    years_spent: number;
   };
   record: RetreatRecord;
 }

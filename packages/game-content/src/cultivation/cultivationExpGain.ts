@@ -86,7 +86,11 @@ export const STAGE_EXP_WEIGHT = {
  * - maxYears 控制单次闭关可计入经验的最大年限，防止一次闭关过长击穿节奏。
  */
 export const RETREAT_EXP_BUDGET = {
-  dailyFractionPerYear: 0.005,
+  // 闭关「一年」= 挂机 365 天的收益（浩瑜 2026-10-08 定：修仙爽文就该闭关一年顶一年）。
+  // 推导：挂机每天 = dailyFractionPerUnit(0.008) × 24 小时 = 0.192
+  //       闭关每年 = 0.192 × 365 = 70.08
+  // 原值 0.005 是「闭关一年只给日预算 0.5%」，比挂机一小时（0.8%）还低，属单位错位。
+  dailyFractionPerYear: 70.08,
   maxYears: 200,
   minBaseExp: 1,
 } as const;

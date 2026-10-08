@@ -113,15 +113,17 @@ export function executeRetreatCommand(args: {
         ) {
           throw new RetreatCommandError('闭关年限需在 1~200 年之间', 400);
         }
-        if (cultivator.lifespan - cultivator.age < args.years) {
-          throw new RetreatCommandError('道友，您没有这么多寿元了', 400);
-        }
         const sectBonuses = await sectOrganizationFacade.getFacilityBonuses(
           args.cultivatorId,
         );
         const result = performCultivation(cultivator, args.years, Math.random, {
           retreatExpMultiplier: sectBonuses.retreatMultiplier,
         });
+        // 撞顶只扣所需年限（C）：寿元校验放在结算之后、按**实际消耗**年限判断。
+        // 否则「寿元不够请求年限、但其实一年就够了」会被误拒。
+        if (cultivator.lifespan - cultivator.age < result.summary.years_spent) {
+          throw new RetreatCommandError('道友，您没有这么多寿元了', 400);
+        }
         const { committed, lifespanStoryPayload } =
           await commitCultivationRetreat({
             userId: args.userId,
@@ -236,6 +238,8 @@ export async function commitCultivationRetreat(args: {
   journal: { operationKey: string; fingerprint: string; replay: typeof retreatResultFromJournal };
 }) {
   const actionInstanceId = randomUUID();
+  // 撞顶只扣所需年限（C）：一切按实际消耗结算 —— 气机消耗、寿元扣除、流水记录。
+  const yearsSpent = args.result.summary.years_spent;
   let streamResult: RetreatResultData = {
     summary: args.result.summary,
     action: 'cultivate',
@@ -253,8 +257,8 @@ export async function commitCultivationRetreat(args: {
         cultivatorId: args.cultivatorId,
         action: 'retreat_10_years',
         actionInstanceId,
-        cost: getRetreatQiCost(args.years),
-        metadata: { years: args.years, retreatAction: 'cultivate' },
+        cost: getRetreatQiCost(yearsSpent),
+        metadata: { years: yearsSpent, retreatAction: 'cultivate' },
         tx,
       });
       await addRetreatRecord(
@@ -286,7 +290,7 @@ export async function commitCultivationRetreat(args: {
       try {
         const lifespan = await consumeLifespanAndHandleDepletion(
           args.cultivatorId,
-          args.years,
+          yearsSpent,
           {
             tx,
             ageAfterConsumption: next.age,
@@ -309,7 +313,7 @@ export async function commitCultivationRetreat(args: {
         result: streamResult,
         journalEvent: {
           type: 'retreat.completed',
-          years: args.years,
+          years: yearsSpent,
           qiSpent: reservation.consumed,
           summary: args.result.summary,
           depleted: Boolean(streamResult.depleted),

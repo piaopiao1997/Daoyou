@@ -21,6 +21,8 @@ const cultivationSummary = z.object({
   bottleneck_entered: z.boolean(),
   can_breakthrough: z.boolean(),
   progress: amount,
+  years_requested: z.number().int().nonnegative(),
+  years_spent: z.number().int().nonnegative(),
 }) satisfies z.ZodType<CultivationResult['summary']>;
 
 const breakthroughSummary = z.object({

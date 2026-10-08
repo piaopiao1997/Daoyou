@@ -118,6 +118,14 @@ function CultivationResultContent({
     <div className="border-ink/10 space-y-3 border border-dashed bg-[rgba(255,252,245,0.78)] p-4 text-sm leading-7">
       <p className="text-ink text-base font-medium">🌱 修炼有成</p>
       <p>修为增长：+{Number(summary.exp_gained)}</p>
+      {summary.years_spent < summary.years_requested ? (
+        <p className="text-gold">
+          修为一满即出关：实际闭关 {summary.years_spent} 年（原定{' '}
+          {summary.years_requested} 年），多出的年限未消耗寿元。
+        </p>
+      ) : (
+        <p>闭关时长：{summary.years_spent} 年</p>
+      )}
       <p>当前进度：{format('.2f')(summary.progress)}%</p>
 
       {summary.insight_gained > 0 ? (
