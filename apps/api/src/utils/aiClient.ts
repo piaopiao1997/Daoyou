@@ -1,7 +1,5 @@
 import type { LlmByokConfig, LlmProviderId } from '@daoyou/contracts/llm/config';
 import {
-  pickHighestWeightLlmRoute,
-  pickLlmRouteByUserHash,
   resolveServerLlmRoutes,
   type LlmRoute,
 } from '@daoyou/contracts/llm/routing';
@@ -100,9 +98,11 @@ export function getAiRuntimeStats() {
   };
 }
 
-function startAiRequest(options: AiTextOptions) {
+function startAiRequest(options: AiTextOptions, attemptBudget = 1) {
   options.abortSignal?.throwIfAborted();
-  const timeoutMs = options.timeoutMs ?? AI_DEFAULT_TIMEOUT_MS;
+  // 保底链里每条路由都单独计时，所以外层总预算要按尝试次数放大
+  const timeoutMs =
+    options.timeoutMs ?? AI_DEFAULT_TIMEOUT_MS * Math.max(1, attemptBudget);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Invalid AI timeout');
   }
@@ -132,8 +132,39 @@ function startAiRequest(options: AiTextOptions) {
   };
 }
 
+/**
+ * 保底链里**单条路由**的取消信号：随外层一起取消，或自己超时。
+ * 与 startAiRequest 的区别：不占并发名额、不影响外层总预算。
+ */
+function startAttemptSignal(options: AiTextOptions, timeoutMs: number) {
+  const controller = new AbortController();
+  const forward = () => controller.abort(options.abortSignal?.reason);
+
+  if (options.abortSignal) {
+    if (options.abortSignal.aborted) {
+      controller.abort(options.abortSignal.reason);
+    } else {
+      options.abortSignal.addEventListener('abort', forward, { once: true });
+    }
+  }
+
+  const timer = setTimeout(
+    () => controller.abort(new Error('AI request timed out')),
+    timeoutMs,
+  );
+  timer.unref();
+
+  return {
+    signal: controller.signal,
+    release() {
+      clearTimeout(timer);
+      options.abortSignal?.removeEventListener('abort', forward);
+    },
+  };
+}
+
 export async function generateAiText(options: AiTextOptions) {
-  const request = startAiRequest(options);
+  const request = startAiRequest(options, resolveAttemptBudget());
   try {
     return await generateAiTextInternal({
       ...options,
@@ -147,7 +178,7 @@ export async function generateAiText(options: AiTextOptions) {
 export async function generateAiObject<GENERATED, RESULT = GENERATED>(
   options: AiObjectOptions<GENERATED, RESULT>,
 ) {
-  const request = startAiRequest(options);
+  const request = startAiRequest(options, resolveAttemptBudget());
   try {
     return await generateAiObjectInternal({
       ...options,
@@ -161,7 +192,7 @@ export async function generateAiObject<GENERATED, RESULT = GENERATED>(
 export async function generateAiArray<ELEMENT, RESULT = ELEMENT[]>(
   options: AiArrayOptions<ELEMENT, RESULT>,
 ) {
-  const request = startAiRequest(options);
+  const request = startAiRequest(options, resolveAttemptBudget());
   try {
     return await generateAiArrayInternal({
       ...options,
@@ -238,10 +269,6 @@ function getRequestConfig(): LlmByokConfig | undefined {
   return getCurrentContext()?.llmConfig;
 }
 
-function getRequestUserId(): string | undefined {
-  return getCurrentContext()?.user?.id;
-}
-
 function listConfiguredServerRoutes(): LlmRoute[] {
   return resolveServerLlmRoutes({
     providerSpec: getRuntimeEnvironment().LLM_PROVIDER,
@@ -252,26 +279,52 @@ function listConfiguredServerRoutes(): LlmRoute[] {
   });
 }
 
-function resolveServerRoute(): LlmRoute {
-  const routes = listConfiguredServerRoutes();
-  if (routes.length === 1) {
-    return routes[0];
-  }
+/** 保底链最多尝试几条路由，避免 LLM_PROVIDER 写爆时无限重试 */
+const AI_FALLBACK_ROUTE_LIMIT = 8;
 
-  const userId = getRequestUserId();
-  return userId
-    ? pickLlmRouteByUserHash(routes, userId)
-    : pickHighestWeightLlmRoute(routes);
+/**
+ * 关掉 SDK 内部重试：保底链本身就是重试机制。
+ * 否则「3 次 SDK 重试 × 每个模型」会让降级非常慢（实测主模型挂掉要 30s+ 才切）。
+ */
+const AI_SDK_MAX_RETRIES = 0;
+
+type LlmRouteTarget = Pick<LlmRoute, 'provider' | 'model'>;
+
+/**
+ * 服务端路由目标，**严格按 LLM_PROVIDER 的书写顺序**返回。
+ * 注意与上游的加权分流不同：这里第 1 条是主模型，其余都是**保底顺位**。
+ */
+function resolveServerRouteTargets(): LlmRouteTarget[] {
+  return listConfiguredServerRoutes()
+    .slice(0, AI_FALLBACK_ROUTE_LIMIT)
+    .map((route) => ({ provider: route.provider, model: route.model }));
 }
 
-function resolveModel(sceneId: LlmSceneId): ResolvedModel {
+/** 本次请求的路由目标：用户自带 key(BYOK) 只有一条，否则用服务端保底链 */
+function resolveRouteTargets(): LlmRouteTarget[] {
   const requestConfig = getRequestConfig();
-  const route = requestConfig
-    ? {
-        provider: requestConfig.provider,
-        model: requestConfig.model,
-      }
-    : resolveServerRoute();
+
+  if (requestConfig) {
+    return [{ provider: requestConfig.provider, model: requestConfig.model }];
+  }
+
+  return resolveServerRouteTargets();
+}
+
+/** 保底链长度，用于给外层总超时留足预算 */
+function resolveAttemptBudget(): number {
+  try {
+    return Math.max(1, resolveRouteTargets().length);
+  } catch {
+    return 1;
+  }
+}
+
+function resolveModelForRoute(
+  sceneId: LlmSceneId,
+  route: LlmRouteTarget,
+  apiKeyOverride?: string,
+): ResolvedModel {
   const providerId = route.provider;
   const def = LLM_PROVIDERS[providerId];
   const modelName = route.model;
@@ -279,13 +332,80 @@ function resolveModel(sceneId: LlmSceneId): ResolvedModel {
     ? createLlmDebugFetch(sceneId, modelName)
     : undefined;
   const apiKey =
-    requestConfig?.apiKey ?? getRuntimeEnvironment()[def.apiKeyEnv]?.trim();
+    apiKeyOverride ?? getRuntimeEnvironment()[def.apiKeyEnv]?.trim();
 
   return {
     model: def.create({ apiKey, fetch: debugFetch })(modelName),
     provider: providerId,
     modelName,
   };
+}
+
+/** 流式场景没法回退（已经有部分输出），只用第一顺位 */
+function resolvePrimaryModel(sceneId: LlmSceneId): ResolvedModel {
+  const requestConfig = getRequestConfig();
+  const target = requestConfig
+    ? { provider: requestConfig.provider, model: requestConfig.model }
+    : resolveServerRouteTargets()[0];
+
+  if (!target) {
+    throw new Error('No LLM route configured.');
+  }
+
+  return resolveModelForRoute(sceneId, target, requestConfig?.apiKey);
+}
+
+/**
+ * 保底执行：**从第一顺位开始，报错就换下一个**。
+ *
+ * - 顺位 = `LLM_PROVIDER` 的书写顺序（`alibaba/A,alibaba/B,alibaba/C` → A → B → C）
+ * - 每条路由**独立计时**（AI_DEFAULT_TIMEOUT_MS），避免第一个卡死吃掉整条链的预算
+ * - 用户主动取消（abort）不降级，直接抛错
+ * - 全部失败才抛最后一个错误
+ */
+async function withModelFallback<T>(
+  options: AiTextOptions,
+  run: (resolved: ResolvedModel, signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const requestConfig = getRequestConfig();
+  const targets = resolveRouteTargets();
+  const apiKeyOverride = requestConfig?.apiKey;
+
+  let lastError: unknown;
+
+  for (let index = 0; index < targets.length; index += 1) {
+    const target = targets[index];
+    const resolved = resolveModelForRoute(
+      options.sceneId,
+      target,
+      apiKeyOverride,
+    );
+    const attempt = startAttemptSignal(options, AI_DEFAULT_TIMEOUT_MS);
+
+    try {
+      return await run(resolved, attempt.signal);
+    } catch (error) {
+      lastError = error;
+
+      if (options.abortSignal?.aborted) {
+        throw error;
+      }
+
+      const next = targets[index + 1];
+      if (!next) {
+        break;
+      }
+
+      console.warn(
+        `[llm] ${target.provider}/${target.model} 失败，降级到下一顺位 ${next.provider}/${next.model}`,
+        error instanceof Error ? error.message : error,
+      );
+    } finally {
+      attempt.release();
+    }
+  }
+
+  throw lastError ?? new Error('No LLM route available');
 }
 
 function setFiniteUsageValue(
@@ -547,31 +667,37 @@ function getStructuredRetryMaxOutputTokens(
 }
 
 async function generateAiTextInternal(options: AiTextOptions) {
-  const { model, modelName, provider } = resolveModel(options.sceneId);
-  const metrics = createMetricContext(options, provider, modelName);
+  return withModelFallback(
+    options,
+    async ({ model, modelName, provider }, signal) => {
+      const metrics = createMetricContext(options, provider, modelName);
 
-  try {
-    const result = await generateText({
-      model,
-      system: options.system,
-      prompt: options.prompt,
-      abortSignal: options.abortSignal,
-      maxOutputTokens: options.maxOutputTokens,
-      reasoning: options.reasoning ?? 'none',
-    });
-    recordMetrics(metrics, {
-      status: 'success',
-      usage: summarizeUsage(result.usage),
-    });
-    return result;
-  } catch (error) {
-    recordMetrics(metrics, { status: 'failure' });
-    throw error;
-  }
+      try {
+        const result = await generateText({
+          model,
+          system: options.system,
+          prompt: options.prompt,
+          abortSignal: signal,
+          maxOutputTokens: options.maxOutputTokens,
+          maxRetries: AI_SDK_MAX_RETRIES,
+          reasoning: options.reasoning ?? 'none',
+        });
+        recordMetrics(metrics, {
+          status: 'success',
+          usage: summarizeUsage(result.usage),
+        });
+        return result;
+      } catch (error) {
+        recordMetrics(metrics, { status: 'failure' });
+        throw error;
+      }
+    },
+  );
 }
 
 export function streamAiText(options: AiTextOptions) {
-  const { model, modelName, provider } = resolveModel(options.sceneId);
+  // 流式不做保底：已经有部分输出，中途换模型会污染内容
+  const { model, modelName, provider } = resolvePrimaryModel(options.sceneId);
   const metrics = createMetricContext(options, provider, modelName);
   const request = startAiRequest(options);
   let terminalMetricRecorded = false;
@@ -729,81 +855,95 @@ async function generateStructured<
 async function generateAiObjectInternal<GENERATED, RESULT = GENERATED>(
   options: AiObjectOptions<GENERATED, RESULT>,
 ) {
-  const { model, modelName, provider } = resolveModel(options.sceneId);
-  const metrics = createMetricContext(
-    options,
-    provider,
-    modelName,
-    getSchemaChars(options.schema),
-  );
-  const output = Output.object({
-    schema: options.schema,
-    name: options.name,
-    description: options.description,
-  });
+  const schemaChars = getSchemaChars(options.schema);
 
-  return generateStructured(
-    metrics,
-    {
-      prompt: options.prompt,
-      maxOutputTokens: options.maxOutputTokens,
-    },
-    (attempt) => {
-      options.abortSignal?.throwIfAborted();
-      return generateText({
-        model,
-        system: options.system,
-        prompt: attempt.prompt,
-        abortSignal: options.abortSignal,
-        maxOutputTokens: attempt.maxOutputTokens,
-        reasoning: options.reasoning ?? 'none',
-        output,
+  return withModelFallback(
+    options,
+    async ({ model, modelName, provider }, signal) => {
+      const metrics = createMetricContext(
+        options,
+        provider,
+        modelName,
+        schemaChars,
+      );
+      const output = Output.object({
+        schema: options.schema,
+        name: options.name,
+        description: options.description,
       });
+
+      return generateStructured(
+        metrics,
+        {
+          prompt: options.prompt,
+          maxOutputTokens: options.maxOutputTokens,
+        },
+        (attempt) => {
+          signal?.throwIfAborted();
+          return generateText({
+            model,
+            system: options.system,
+            prompt: attempt.prompt,
+            abortSignal: signal,
+            maxOutputTokens: attempt.maxOutputTokens,
+            maxRetries: AI_SDK_MAX_RETRIES,
+            reasoning: options.reasoning ?? 'none',
+            output,
+          });
+        },
+        (generated) =>
+          options.resultSchema
+            ? options.resultSchema.parse(generated)
+            : (generated as unknown as RESULT),
+      );
     },
-    (generated) =>
-      options.resultSchema
-        ? options.resultSchema.parse(generated)
-        : (generated as unknown as RESULT),
   );
 }
 
 async function generateAiArrayInternal<ELEMENT, RESULT = ELEMENT[]>(
   options: AiArrayOptions<ELEMENT, RESULT>,
 ) {
-  const { model, modelName, provider } = resolveModel(options.sceneId);
-  const metrics = createMetricContext(
-    options,
-    provider,
-    modelName,
-    getSchemaChars(z.array(options.elementSchema)),
-  );
-  const output = Output.array({
-    element: options.elementSchema,
-    name: options.name,
-    description: options.description,
-  });
+  const schemaChars = getSchemaChars(z.array(options.elementSchema));
 
-  return generateStructured(
-    metrics,
-    {
-      prompt: options.prompt,
-      maxOutputTokens: options.maxOutputTokens,
-    },
-    (attempt) => {
-      options.abortSignal?.throwIfAborted();
-      return generateText({
-        model,
-        system: options.system,
-        prompt: attempt.prompt,
-        abortSignal: options.abortSignal,
-        maxOutputTokens: attempt.maxOutputTokens,
-        reasoning: options.reasoning ?? 'none',
-        output,
+  return withModelFallback(
+    options,
+    async ({ model, modelName, provider }, signal) => {
+      const metrics = createMetricContext(
+        options,
+        provider,
+        modelName,
+        schemaChars,
+      );
+      const output = Output.array({
+        element: options.elementSchema,
+        name: options.name,
+        description: options.description,
       });
+
+      return generateStructured(
+        metrics,
+        {
+          prompt: options.prompt,
+          maxOutputTokens: options.maxOutputTokens,
+        },
+        (attempt) => {
+          signal?.throwIfAborted();
+          return generateText({
+            model,
+            system: options.system,
+            prompt: attempt.prompt,
+            abortSignal: signal,
+            maxOutputTokens: attempt.maxOutputTokens,
+            maxRetries: AI_SDK_MAX_RETRIES,
+            reasoning: options.reasoning ?? 'none',
+            output,
+          });
+        },
+        (generated) =>
+          options.resultSchema
+            ? options.resultSchema.parse(generated)
+            : (generated as unknown as RESULT),
+      );
     },
-    (generated) =>
-      options.resultSchema
-        ? options.resultSchema.parse(generated)
-        : (generated as unknown as RESULT),
   );
 }
