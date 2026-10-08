@@ -168,18 +168,20 @@ export function ModelConfigTab() {
         ) : null}
       </div>
 
-      <SettingsSection>
+      <SettingsSection title="说明">
+        <ul className="text-ink-secondary space-y-2 text-sm leading-6">
+          <li>· 支持 DeepSeek、阿里云百炼（Qwen），以及任意 <strong>OpenAI 兼容</strong> 接口（自定义）。</li>
+          <li>· 配置保存在浏览器 localStorage，<strong>仅当前设备生效</strong>；更换浏览器或清除缓存后需要重新配置。</li>
+          <li>· API Key 仅在前端本地存储，服务端通过请求头获取并调用，<strong>不会在服务器持久化保存</strong>。</li>
+          <li>· 自定义接口请填写到 <code>/v1</code> 为止的地址（例如 <code>https://your-gateway.com/v1</code>），且对方网关需支持结构化输出（<code>response_format: json_schema</code>），否则模型可能返回不符合要求的内容。</li>
+        </ul>
+      </SettingsSection>
+
+      <SettingsSection title="重要：不参与服务器保底">
         <p className="text-ink-secondary text-sm leading-6">
-          支持 DeepSeek、阿里云百炼（Qwen），以及任意
-          <strong> OpenAI 兼容 </strong>
-          接口（自定义）。配置保存在浏览器 localStorage 中，仅当前设备生效，
-          更换浏览器或清除缓存后需要重新配置。
+          配置之后，你的推演<strong>不再使用服务器默认模型，也不会走服务器的模型保底链</strong>。这是刻意的设计 —— 既然用自己的 Key，就由自己负责。
           <br />
-          API Key
-          仅在前端本地存储，服务端通过请求头获取并调用，不会在服务器持久化保存。
-          <br />
-          自定义接口请填写到 <code>/v1</code> 为止的地址（例如
-          <code> https://your-gateway.com/v1</code>）。
+          Key 失效、额度不足、网关不支持结构化输出、网络不通等情况，推演会<strong>直接失败</strong>，不会自动回落到服务器模型。想恢复默认，点「清除配置」即可。
         </p>
       </SettingsSection>
     </div>
