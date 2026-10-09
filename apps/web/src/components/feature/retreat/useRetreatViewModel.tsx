@@ -150,6 +150,7 @@ export function useRetreatViewModel(): UseRetreatViewModelReturn {
     tasks,
     loading: tasksLoading,
     error: taskError,
+    reload: reloadTasks,
   } = useTaskList(cultivator?.id);
   const [retreatYears, setRetreatYears] = useState('10');
   const requestInFlight = useRef(false);
@@ -427,6 +428,9 @@ export function useRetreatViewModel(): UseRetreatViewModelReturn {
                 : '大境界突破仍需先完成破境任务',
             tone: 'warning',
           });
+          // 这次请求已经让后端把破境卷宗落库了，重新拉一次任务列表，
+          // 静室就能立刻显示卷宗内容，不必让玩家手动刷新页面。
+          await reloadTasks();
           return;
         }
 
@@ -439,7 +443,7 @@ export function useRetreatViewModel(): UseRetreatViewModelReturn {
         tone: 'danger',
       });
     }
-  }, [cultivator, pushToast, streamRetreatAction]);
+  }, [cultivator, pushToast, reloadTasks, streamRetreatAction]);
 
   const closeRetreatResult = useCallback(() => {
     if (retreatResultStreaming || retreatResult?.depleted) {
